@@ -11,12 +11,12 @@ jobs:
   main:
     name: OpenID Connect (OIDC) IAM role
     runs-on: ubuntu-latest
-    # note: permissions required to both fetch GitHub OpenID Connect token and actions/checkout
+    # note: permissions required to fetch OpenID Connect token and allow actions/checkout
     permissions:
       contents: read
       id-token: write
     steps:
-      - name: Assume IAM role
+      - name: Assume AWS IAM role
         uses: flipgroup/action-aws-assume-role-oidc@main
         with:
           # note: assume-role-arn is optional
