@@ -12,7 +12,7 @@ inputs:
     default: 1200
   assume-role-session-name:
     description: Assumed IAM role session name.
-    default: GitHubActions
+    default: github-actions
   aws-region:
     description: Desired AWS region.
     required: true
