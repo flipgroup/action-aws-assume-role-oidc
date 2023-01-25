@@ -7,7 +7,6 @@ import sys
 import time
 import urllib.error
 import urllib.request
-from typing import Dict, Tuple
 
 ASSUME_ROLE_RETRY_COUNT = 5
 ASSUME_ROLE_RETRY_BACKOFF_MILLISECONDS = 500
@@ -22,7 +21,7 @@ def mask_value(value: str):
     print("::add-mask::" + value)
 
 
-def read_inputs() -> Tuple[str, str, str, str, str]:
+def read_inputs() -> tuple[str, str, str, str, str]:
     def _env(key: str) -> str:
         return os.environ.get(key, "").strip()
 
@@ -93,9 +92,9 @@ def aws_sts_assume_role(
     role_session_name: str,
     role_duration: str,
     web_identity_token: str = "",
-    env_var_collection: Dict[str, str] = {},
+    env_var_collection: dict[str, str] = {},
     retry_error_match_list: list[str] = [],
-) -> Tuple[str, str, str]:
+) -> tuple[str, str, str]:
     # build command argument list and environment variables to pass
     arg_list = [
         "aws",
