@@ -4,9 +4,12 @@ import json
 import os
 import subprocess
 import sys
+import time
 import urllib.error
 import urllib.request
-from typing import Dict, Tuple
+
+ASSUME_ROLE_RETRY_COUNT = 5
+ASSUME_ROLE_RETRY_BACKOFF_MILLISECONDS = 500
 
 
 def exit_error(message: str):
@@ -18,7 +21,7 @@ def mask_value(value: str):
     print("::add-mask::" + value)
 
 
-def read_inputs() -> Tuple[str, str, str, str, str]:
+def read_inputs() -> tuple[str, str, str, str, str]:
     def _env(key: str) -> str:
         return os.environ.get(key, "").strip()
 
@@ -89,8 +92,9 @@ def aws_sts_assume_role(
     role_session_name: str,
     role_duration: str,
     web_identity_token: str = "",
-    env_var_collection: Dict[str, str] = {},
-) -> Tuple[str, str, str]:
+    env_var_collection: dict[str, str] = {},
+    retry_error_match_list: list[str] = [],
+) -> tuple[str, str, str]:
     # build command argument list and environment variables to pass
     arg_list = [
         "aws",
@@ -109,38 +113,62 @@ def aws_sts_assume_role(
     if web_identity_token != "":
         arg_list += ["--web-identity-token", web_identity_token]
 
-    # set `AWS_EC2_METADATA_DISABLED` to avoid AWS CLI reaching out to metadata endpoint
-    # on GitHub-hosted runners, which causes runtime error
+    # setting `AWS_EC2_METADATA_DISABLED` stops the AWS CLI from reaching out
+    # to (a non-existent) metadata endpoint on GitHub hosted runners
     env_var_collection["AWS_EC2_METADATA_DISABLED"] = "true"
     env_var_collection["PATH"] = os.environ.get("PATH", "")
 
-    # execute AWS CLI command
-    try:
-        result = subprocess.run(
-            arg_list,
-            encoding="utf-8",
-            env=env_var_collection,
-            stderr=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-        )
-    except FileNotFoundError as ex:
-        exit_error("unable to assume role, AWS CLI installed?")
+    retry_remain = ASSUME_ROLE_RETRY_COUNT
+    retry_backoff_milliseconds = 0
+    result_stdout = ""
 
-    if result.returncode != 0:
-        exit_error("unable to assume role: \n" + result.stderr.strip())
+    def allow_retry(result_stderr) -> bool:
+        if retry_error_match_list and (retry_remain > 0):
+            # if error message text contains item in error match list - allow retry
+            for item in retry_error_match_list:
+                if item in result_stderr:
+                    return True
+
+        return False
+
+    while True:
+        # execute AWS CLI command
+        retry_remain -= 1
+        try:
+            result = subprocess.run(
+                arg_list,
+                encoding="utf-8",
+                env=env_var_collection,
+                stderr=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+            )
+        except FileNotFoundError as ex:
+            exit_error("unable to assume role, AWS CLI installed?")
+
+        if result.returncode == 0:
+            # hold result of successful execution, exit retry loop
+            result_stdout = result.stdout
+            break
+
+        # command execution resulted in error
+        result_stderr = result.stderr.strip()
+        if allow_retry(result_stderr):
+            # backoff a little, move onto a retry attempt
+            retry_backoff_milliseconds += ASSUME_ROLE_RETRY_BACKOFF_MILLISECONDS
+            time.sleep(retry_backoff_milliseconds / 1000)
+            continue
+
+        exit_error("unable to assume role: \n" + result_stderr)
 
     # parse JSON response from AWS CLI assume role call
     try:
-        assume_data = json.loads(result.stdout)
+        assume_data = json.loads(result_stdout)
     except json.decoder.JSONDecodeError:
         exit_error("unable to assume role - malformed AWS CLI response")
 
     # pull out generated session credentials
     def credential_part(key: str) -> str:
-        if "Credentials" not in assume_data:
-            return ""
-
-        return assume_data["Credentials"].get(key, "")
+        return assume_data.get("Credentials", {}).get(key, "")
 
     access_key_id = credential_part("AccessKeyId")
     secret_access_key = credential_part("SecretAccessKey")
@@ -189,8 +217,7 @@ def main():
         aws_region,
     ) = read_inputs()
 
-    # assume target IAM role ARN via OpenID Connect (OIDC)
-    # and then optionally assume *another* IAM role if `assume_role_arn` non-empty
+    # assume IAM role ARN via OpenID Connect (OIDC)
     wi_token = fetch_oidc_jwt()
     (access_key_id, secret_access_key, session_token) = aws_sts_assume_role(
         "assume-role-with-web-identity",
@@ -198,10 +225,13 @@ def main():
         role_session_name=assume_role_session_name,
         role_duration=assume_role_duration,
         web_identity_token=wi_token,
+        retry_error_match_list=[
+            "Couldn't retrieve verification key from your identity provider",
+        ],
     )
 
     if assume_role_arn != "":
-        # from the OIDC IAM role, assume another final IAM role
+        # from the OIDC IAM role, assume *another* final IAM role
         (access_key_id, secret_access_key, session_token) = aws_sts_assume_role(
             "assume-role",
             role_arn=assume_role_arn,
