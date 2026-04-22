@@ -143,7 +143,7 @@ def aws_sts_assume_role(
                 stderr=subprocess.PIPE,
                 stdout=subprocess.PIPE,
             )
-        except FileNotFoundError as ex:
+        except FileNotFoundError:
             exit_error("unable to assume role, AWS CLI installed?")
 
         if result.returncode == 0:
